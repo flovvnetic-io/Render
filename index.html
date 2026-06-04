@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Face Height Map Viewer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #fff;
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vw;
+            max-height: 100vh;
+        }
+
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(20, 20, 20, 0.85);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            z-index: 10;
+            width: 260px; /* Fixed width to prevent jumping when minimizing */
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s ease;
+        }
+
+        /* Minimized State */
+        #ui-container.minimized {
+            padding-bottom: 20px;
+        }
+        
+        #ui-container.minimized #ui-content {
+            display: none;
+        }
+
+        .ui-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .ui-header h2 {
+            margin: 0;
+            font-size: 18px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #00adb5;
+        }
+
+        #toggle-ui-btn {
+            background: none;
+            border: none;
+            color: #00adb5;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 0 5px;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+
+        #toggle-ui-btn:hover {
+            color: #007a80;
+        }
+
+        #ui-content {
+            margin-top: 20px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            font-size: 12px;
+            margin-bottom: 5px;
+            color: #ccc;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .upload-btn {
+            display: block;
+            background: #00adb5;
+            color: white;
+            padding: 10px;
+            text-align: center;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+            margin-bottom: 5px;
+        }
+
+        .upload-btn:hover {
+            background: #007a80;
+        }
+        
+        .upload-btn.secondary {
+            background: #393e46;
+            color: #00adb5;
+            border: 1px solid #00adb5;
+        }
+
+        .upload-btn.secondary:hover {
+            background: #222831;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: #00adb5;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .checkbox-group input {
+            cursor: pointer;
+        }
+
+        #placeholder-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            pointer-events: none;
+            color: #666;
+            font-size: 18px;
+        }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <div id="ui-container">
+        <div class="ui-header">
+            <h2>Face Extruder</h2>
+            <button id="toggle-ui-btn" title="Toggle Menu">−</button>
+        </div>
+        
+        <div id="ui-content">
+            <div class="control-group">
+                <label for="heightLoader" class="upload-btn">1. Upload Height Map</label>
+                <input type="file" id="heightLoader" accept="image/*">
+                
+                <label for="textureLoader" class="upload-btn secondary">2. Upload Color Photo</label>
+                <input type="file" id="textureLoader" accept="image/*">
+            </div>
+
+            <div class="control-group">
+                <label id="depth-label">Depth Intensity: 2.0</label>
+                <input type="range" id="depthScale" min="0" max="5" step="0.1" value="2">
+            </div>
+
+            <div class="control-group checkbox-group">
+                <input type="checkbox" id="showTexture" checked>
+                <label style="margin:0;" for="showTexture">Apply Color Photo</label>
+            </div>
+
+            <div class="control-group checkbox-group">
+                <input type="checkbox" id="wireframe">
+                <label style="margin:0;" for="wireframe">Wireframe Mode</label>
+            </div>
+            
+            <p style="font-size: 11px; color: #888; margin-bottom: 0;">
+                Left Click + Drag to rotate.<br>
+                Right Click + Drag to pan.<br>
+                Scroll to zoom.
+            </p>
+        </div>
+    </div>
+
+    <div id="placeholder-text">Upload a grayscale face height map to generate 3D mesh</div>
+    <div id="canvas-container"></div>
+
+    <script>
+        // --- UI Minimize/Maximize Logic ---
+        const uiContainer = document.getElementById('ui-container');
+        const toggleBtn = document.getElementById('toggle-ui-btn');
+
+        toggleBtn.addEventListener('click', () => {
+            uiContainer.classList.toggle('minimized');
+            if (uiContainer.classList.contains('minimized')) {
+                toggleBtn.innerText = '+';
+            } else {
+                toggleBtn.innerText = '−';
+            }
+        });
+
+        // --- Three.js Setup ---
+        const container = document.getElementById('canvas-container');
+        const placeholder = document.getElementById('placeholder-text');
+        
+        const scene = new THREE.Scene();
+        
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 0, 12);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight1.position.set(5, 5, 8);
+        scene.add(dirLight1);
+
+        const dirLight2 = new THREE.DirectionalLight(0x00adb5, 0.4); 
+        dirLight2.position.set(-5, -3, 2);
+        scene.add(dirLight2);
+
+        // --- Geometry & Material Setup ---
+        const geometry = new THREE.PlaneGeometry(6, 6, 512, 512); 
+        
+        const material = new THREE.MeshStandardMaterial({
+            color: 0x999999,
+            roughness: 0.4,
+            metalness: 0.1,
+            side: THREE.DoubleSide,
+            displacementScale: 2.0
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+
+        // --- UI Interactions & File Loading ---
+        const heightLoader = document.getElementById('heightLoader');
+        const textureLoader = document.getElementById('textureLoader');
+        const depthSlider = document.getElementById('depthScale');
+        const depthLabel = document.getElementById('depth-label');
+        const wireframeCheck = document.getElementById('wireframe');
+        const textureCheck = document.getElementById('showTexture');
+        
+        let loadedDisplacementMap = null;
+        let loadedColorTexture = null;
+
+        heightLoader.addEventListener('change', (e) => handleImageLoad(e, 'height'), false);
+        textureLoader.addEventListener('change', (e) => handleImageLoad(e, 'texture'), false);
+
+        function handleImageLoad(e, type) {
+            if (!e.target.files[0]) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() {
+                    const texture = new THREE.Texture(img);
+                    texture.needsUpdate = true;
+
+                    // Calculate aspect ratio and scale the mesh to prevent stretching
+                    const aspect = img.width / img.height;
+                    if (aspect > 1) {
+                        // Landscape image
+                        mesh.scale.set(1, 1 / aspect, 1);
+                    } else {
+                        // Portrait image
+                        mesh.scale.set(aspect, 1, 1);
+                    }
+
+                    if (type === 'height') {
+                        loadedDisplacementMap = texture;
+                        material.displacementMap = texture;
+                        placeholder.style.display = 'none';
+                    } else if (type === 'texture') {
+                        loadedColorTexture = texture;
+                        if (textureCheck.checked) {
+                            material.map = texture;
+                            material.color.setHex(0xffffff);
+                        }
+                    }
+
+                    material.needsUpdate = true;
+                }
+                img.src = event.target.result;
+            }
+            reader.readAsDataURL(e.target.files[0]);
+        }
+
+        // Live Adjustments
+        depthSlider.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            material.displacementScale = val;
+            depthLabel.innerText = `Depth Intensity: ${val.toFixed(1)}`;
+        });
+
+        wireframeCheck.addEventListener('change', (e) => {
+            material.wireframe = e.target.checked;
+        });
+
+        textureCheck.addEventListener('change', (e) => {
+            if (e.target.checked && loadedColorTexture) {
+                material.map = loadedColorTexture;
+                material.color.setHex(0xffffff); // reveals image colors
+            } else {
+                material.map = null;
+                material.color.setHex(0x999999); // "Clay/Plaster" look
+            }
+            material.needsUpdate = true;
+        });
+
+        // Window resizing
+        window.addEventListener('resize', onWindowResize, false);
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        
+        animate();
+    </script>
+</body>
+</html>
